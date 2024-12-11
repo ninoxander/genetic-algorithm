@@ -1,131 +1,125 @@
 package nino.ga.behaviours;
 
 import jade.core.behaviours.Behaviour;
-import jade.core.Agent;
-import jade.lang.acl.ACLMessage;
-import jade.lang.acl.MessageTemplate;
-import nino.ga.AgentsList;
 
 public class EvolutionBehaviour extends Behaviour {
     private int maxGenerations;
     private int currentGeneration = 0;
-    private boolean isInitialized = false;
+    private double[][] population;
+    private double[] fitness;
+    private double[][] selectedPopulation;
+    private double[][] newPopulation;
+    private double mutationRate;
+    private double crossoverRate;
+    private double[] X;
+    private double[] y;
+    private double fitnessThreshold = 0.97;
 
-    public EvolutionBehaviour(Agent agent, int maxGenerations) {
-        super(agent);
+    private PopulationBehaviour populationBehaviour;
+    private FitnessBehaviour fitnessBehaviour;
+    private SelectionBehaviour selectionBehaviour;
+    private CrossoverBehaviour crossoverBehaviour;
+    private MutationBehaviour mutationBehaviour;
+
+    public EvolutionBehaviour(int maxGenerations, double mutationRate, double crossoverRate, double[] X, double[] y, int populationSize) {
         this.maxGenerations = maxGenerations;
+        this.mutationRate = mutationRate;
+        this.crossoverRate = crossoverRate;
+        this.X = X;
+        this.y = y;
+
+        // Initialize behaviours
+        this.populationBehaviour = new PopulationBehaviour(populationSize);
+        this.fitnessBehaviour = new FitnessBehaviour();
+        this.selectionBehaviour = new SelectionBehaviour();
+        this.crossoverBehaviour = new CrossoverBehaviour(crossoverRate);
+        this.mutationBehaviour = new MutationBehaviour(mutationRate);
+
+        // Initialize population
+        this.population = populationBehaviour.generateInitialPopulation();
     }
 
     @Override
     public void action() {
-        if (!isInitialized) {
-            // Enviar mensaje inicial al PopulationAgent
-            ACLMessage initMsg = new ACLMessage(ACLMessage.REQUEST);
-            initMsg.addReceiver(myAgent.getAID(AgentsList.AGENT_POPULATION));
-            initMsg.setConversationId("POPULATION-INIT");
-            initMsg.setContent("START");
-            myAgent.send(initMsg);
+        fitness = fitnessBehaviour.calculateFitness(population, X, y);
+        selectedPopulation = selectionBehaviour.select(population, fitness);
+        newPopulation = crossoverBehaviour.performCrossover(selectedPopulation, fitness);
+        population = mutationBehaviour.applyMutation(newPopulation);
 
-            isInitialized = true;
-        } else {
-            // Esperar respuesta del MutationAgent
-            MessageTemplate mutationTemplate = MessageTemplate.MatchConversationId("NEXT-GENERATION");
-            ACLMessage mutationResponse = myAgent.blockingReceive(mutationTemplate, 5000); // Timeout de 5 segundos
-
-            if (mutationResponse != null) {
-                String mutatedPopulation = mutationResponse.getContent();
-                currentGeneration++;
-                System.out.println("----- Generación " + currentGeneration + " de " + maxGenerations + " procesada -----");
-
-                // Enviar la población mutada al MutationAgent para la siguiente generación
-                if (currentGeneration < maxGenerations) {
-                    ACLMessage nextGenMsg = new ACLMessage(ACLMessage.REQUEST);
-                    nextGenMsg.addReceiver(myAgent.getAID(AgentsList.AGENT_MUTATION));
-                    nextGenMsg.setConversationId("NEXT-GENERATION");
-                    nextGenMsg.setContent(mutatedPopulation);
-                    myAgent.send(nextGenMsg);
-                    // System.out.println("EvolutionBehaviour: Población enviada al MutationAgent para la siguiente generación.");
-                    System.out.println(mutatedPopulation);
-                }
-            } else {
-                System.out.println("EvolutionBehaviour: No se recibió respuesta del MutationAgent. Reintentando...");
-            }
-        }
+        currentGeneration++;
     }
 
     @Override
     public boolean done() {
         if (currentGeneration >= maxGenerations) {
-            System.out.println("Evolución completada tras " + maxGenerations + " generaciones.");
+            System.out.println("\nEvolución completada tras " + maxGenerations + " generaciones.");
 
-            // Cálculo de R² y valores de beta finales
-            double finalBeta0 = 0.0;
-            double finalBeta1 = 0.0;
-            double rSquared = 0.0;
+            // Calculate final results
+            double[] bestCoefficients = getBestCoefficients();
+            double rSquared = calculateRSquared(bestCoefficients, X, y);
 
-            try {
-                // Obtener la última población mutada
-                String[] finalPopulation = getLastPopulation().split(";");
-                double[] beta0Array = parseArray(finalPopulation[0]);
-                double[] beta1Array = parseArray(finalPopulation[1]);
-
-                // Calcular valores finales
-                finalBeta0 = calculateAverage(beta0Array);
-                finalBeta1 = calculateAverage(beta1Array);
-
-                // Simula el cálculo de R² basado en un conjunto de datos (puedes adaptar esto a tu dataset real)
-                double[] yObserved = {10, 20, 30}; // Valores observados
-                double[] xValues = {1, 2, 3};     // Valores independientes
-                rSquared = calculateRSquared(yObserved, xValues, finalBeta0, finalBeta1);
-            } catch (Exception e) {
-                System.err.println("Error al calcular R² o betas finales: " + e.getMessage());
-            }
-
-            // Imprimir resultados
             System.out.println("R^2 Final: " + rSquared);
             System.out.println("Valores finales de beta:");
-            System.out.println("beta_0: " + finalBeta0);
-            System.out.println("beta_1: " + finalBeta1);
-
+            System.out.println("beta_0: " + bestCoefficients[0]);
+            System.out.println("beta_1: " + bestCoefficients[1]);
             return true;
         }
         return false;
     }
 
-    // Métodos auxiliares para el cálculo
-    private double calculateAverage(double[] values) {
+    private double getBestFitness() {
+        double bestFitness = Double.MIN_VALUE;
+        for (double fit : fitness) {
+            if (fit > bestFitness) {
+                bestFitness = fit;
+            }
+        }
+        return bestFitness;
+    }
+
+    private double[] getBestCoefficients() {
+        double[] bestCoefficients = null;
+        double bestFitness = Double.MAX_VALUE;
+
+        for (double[] individual : population) {
+            double fitnessValue = 1 / (1 + calculateError(individual, X, y));
+            if (fitnessValue < bestFitness) {
+                bestFitness = fitnessValue;
+                bestCoefficients = individual.clone();
+            }
+        }
+
+        return bestCoefficients;
+    }
+
+    private double calculateRSquared(double[] coefficients, double[] X, double[] y) {
+        double ssTotal = 0.0;
+        double ssResidual = 0.0;
+        double yMean = calculateMean(y);
+
+        for (int i = 0; i < y.length; i++) {
+            double yPredicted = coefficients[0] + coefficients[1] * X[i];
+            ssResidual += Math.pow(y[i] - yPredicted, 2);
+            ssTotal += Math.pow(y[i] - yMean, 2);
+        }
+
+        return 1 - (ssResidual / ssTotal);
+    }
+
+    private double calculateError(double[] coefficients, double[] X, double[] y) {
+        double error = 0.0;
+        for (int i = 0; i < X.length; i++) {
+            double prediction = coefficients[0] + coefficients[1] * X[i];
+            error += Math.pow(y[i] - prediction, 2);
+        }
+        return error / X.length;
+    }
+
+    private double calculateMean(double[] values) {
         double sum = 0.0;
         for (double value : values) {
             sum += value;
         }
         return sum / values.length;
     }
-
-    private double calculateRSquared(double[] yObserved, double[] xValues, double beta0, double beta1) {
-        double ssTotal = 0.0;
-        double ssResidual = 0.0;
-        double yMean = calculateAverage(yObserved);
-
-        for (int i = 0; i < yObserved.length; i++) {
-            double yPredicted = beta0 + beta1 * xValues[i];
-            ssResidual += Math.pow(yObserved[i] - yPredicted, 2);
-            ssTotal += Math.pow(yObserved[i] - yMean, 2);
-        }
-        return 1 - (ssResidual / ssTotal);
-    }
-
-    private double[] parseArray(String serializedArray) {
-        String[] items = serializedArray.split(",");
-        double[] array = new double[items.length];
-        for (int i = 0; i < items.length; i++) {
-            array[i] = Double.parseDouble(items[i]);
-        }
-        return array;
-    }
-
-    private String getLastPopulation() {
-        // Simula la última población mutada; reemplaza esto con tu implementación para obtener la población real
-        return "19.086279095089914,18.5;5.456492165644436,5.7";
-    }
-
 }
